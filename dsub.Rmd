@@ -1,0 +1,318 @@
+---
+title: "xd"
+author: "Sarah J. Weintraub"
+date: "5/5/2023"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    fig_crop: no
+---
+```{r "setdown", include=FALSE}
+setwd("~/Library/Mobile Documents/com~apple~CloudDocs/Documents/WPI/Young/data")
+```
+
+```{r "source", include=FALSE}
+getwd()
+```
+
+```{r load libraries, include=F}
+
+library(DESeq2)
+library(dplyr)
+library(tibble)
+library(apeglm)
+library("vsn")
+library("pheatmap")
+library("RColorBrewer")
+library("ggplot2")
+library(reshape)
+library(ggrepel)
+library(DEGreport)
+library(readr)
+library('genefilter')
+library("ashr")
+# library('EnhancedVolcano')
+
+```
+
+```{r import data, include=F}
+annotations = read.csv("dsub/output/jgi_ergo_annotation_dsub.csv")
+annotations = annotations[,-c(1,3)]
+
+x <- read.delim("dsub/data/counts.txt") #5831 transcripts
+x$GeneID = sub("|jgi.p\\|Debsub1\\|", "",x$GeneID)
+row.names(x) = x$GeneID
+x = x[-1]
+head(x)
+```
+
+```{r normalize count data, include=F}
+
+mean_counts <- apply(x[, 1:3], 1, mean)
+variance_counts <- apply(x[, 1:3], 1, var)
+df <- data.frame(mean_counts, variance_counts)
+
+ggplot(df) +
+  geom_point(aes(x=mean_counts, y=variance_counts)) + 
+  geom_line(aes(x=mean_counts, y=mean_counts, color="red")) +
+  scale_y_log10() +
+  scale_x_log10()
+# variance tends to be greater than the mean - data not fit for Poisson dist, need to account for increased variance using negative binomial model
+```
+
+```{r DGElist transformation, message=FALSE, warning=FALSE, include=F}
+# transform data to DGEList
+# grodown <- factor(c('cont', 'cont', 'cont', 'lowN', 'lowN', 'lowN', 'salt', 'salt', 'salt', 'lowFE', 'lowFE', 'lowFE')) #grodown 1 is control
+names(x) = c('cont', 'cont', 'cont', 'lowN', 'lowN', 'lowN', 'salt', 'salt', 'salt', 'lowFE', 'lowFE', 'lowFE')
+head(x)
+
+cts <- as.matrix(x)
+coldata = read.delim("dsub/data/LIBRARIES_data.txt")
+coldata <- coldata[,c("X5.sampleName", "X6.conditionNumber")]
+
+coldata = coldata[!duplicated(coldata),] #remove ddownlicates
+coldata$X5.sampleName = sub("DHOP_", "", colnames(cts))
+coldata$type <- factor(coldata$X6.conditionNumber,levels = c("1","2","3","4"))
+coldata$condition <- factor(coldata$X5.sampleName,levels = c("cont","lowN","salt","lowFE"))
+coldata = coldata[,-c(1:2)] ; coldata
+
+all(coldata$condition %in% colnames(cts))
+all(coldata$data == colnames(cts)) ; coldata
+
+# pre-filtering
+dds <- DESeqDataSetFromMatrix(countData = cts,
+                              colData = coldata,
+                              design = ~ condition) ; dds
+featureData <- data.frame(gene=rownames(cts))
+mcols(dds) <- DataFrame(mcols(dds), featureData) ; mcols(dds)
+
+keep = rowSums(counts(dds)) >= 10 #filter out transcripts that the whole row adds down to less than 10
+dds = dds[keep,]
+
+dds = DESeq(dds)
+
+ddsColl = collapseReplicates(dds, dds$condition)
+
+```
+
+```{r save nomalized counts, message=FALSE, warning=FALSE, include=F}
+# save normalized counts
+norm_counts = counts(dds, normalized = T)
+write.table(norm_counts, file="dsub/output/norm_counts.txt", sep="\t", quote=F, col.names=T)
+norm_counts = read.delim('dsub/output/norm_counts.txt')
+```
+
+```{r Transform normalized counts using rlog transformation, message=FALSE, warning=FALSE, include=F}
+## improves distances/clustering for PCA and hierarchical clustering visualization
+rld <- rlog(ddsColl, blind=TRUE)
+```
+
+```{r Plot PCA, echo=FALSE, fig.height=2, fig.width=5, message=FALSE, warning=FALSE}
+# pca = plotPCA(rld, intgroup = 'condition')
+# 
+# png('dsub/output/images/dsub_pca.png')
+# plot(pca)
+# dev.off()
+# plot(pca)
+
+pdf("dsub/output/images/dsub_pca.pdf", height = 6, width = 12)
+pca <- plotPCA(rld, intgroup=c("condition"), returnData=TRUE)
+percentVar <- round(100 * attr(pca, "percentVar"))
+plotPCA <- ggplot(pca, aes(PC1, PC2, color=condition)) +
+  ylim(-20,20) +
+  xlim(-35,45) +
+  theme(text = element_text(size = 40), legend.position = "none") +
+  geom_point(size = 6) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) +
+  geom_text_repel(aes(label=c("cont"="sc + glucose", "lowN"="-NH3+", "salt" = "+NaCl", "lowFE" = "-Fe")), size=10, box.padding = unit(0.5, "lines"), hjust=0.25, vjust=-0.5, show_guide = T) ; plot(plotPCA)
+print(plotPCA)
+dev.off()
+
+# plotPCA2 <- ggplot(pca2, aes(PC1, PC2, color=condition)) +
+#   geom_point(size=3) +
+#   xlab(paste0("PC1")) +
+#   ylab(paste0("PC2")) +
+#   geom_text(aes(label=condition),hjust=0.5, vjust=-0.5, show_guide = T) ; plot(plotPCA2)
+# ggsave("dsub/output/images/ds_pca3.png", plot = plotPCA2, height = 6, width = 12)
+# 
+# plotPCA3 <- ggplot(pca2, aes(PC1, PC2, color=condition)) +
+#   ylim(-20,20) +
+#   xlim(-35,45) +
+#   geom_point(size=3) +
+#   xlab(paste0("PC1")) +
+#   ylab(paste0("PC2")) +
+#   geom_text(aes(label=condition),hjust=0.5, vjust=-0.5, show_guide = T) ; plot(plotPCA3)
+# ggsave("dsub/output/images/ds_pca4.png", plot = plotPCA3, height = 6, width = 12)
+```
+
+```{r create function to save heatmap image, message=FALSE, warning=FALSE, include=FALSE}
+save_pheatmap_png <- function(x, filename, width=1200, height=1000, res = 150) {
+  png(filename, width = width, height = height, res = res)
+  grid::grid.newpage()
+  grid::grid.draw(x$gtable)
+  dev.off()
+}
+```
+
+```{r Hierarchical Clustering, echo=FALSE, message=FALSE, warning=FALSE}
+rld_mat <- assay(rld)
+rld_cor <- cor(rld_mat) 
+#head(rld_cor) 
+hc = pheatmap(rld_cor, cellwidth=25, cellheight=25)
+## pretty high correlations across the board: no outlying samples
+save_pheatmap_png(hc, "dsub/output/images/dsub_hierCluster.png")
+```
+```{r message=FALSE, warning=FALSE, include=FALSE}
+resultsNames(ddsColl)
+
+lowFE_results <- subset(results(ddsColl, contrast = c("condition", "lowFE", "cont")))
+lowFE_contrastDEGenes <- lfcShrink(ddsColl, contrast = c("condition", "lowFE", "cont"), type = "ashr", res = lowFE_results)
+save(lowFE_contrastDEGenes, file = "dsub/output/lowFE_contrastDEGenes.RData")
+lowFE = as.data.frame(lowFE_contrastDEGenes)
+lowFE$proteinId = rownames(lowFE)
+lowFE_FC = lowFE[,c(2,6)]
+names(lowFE_FC) = c("lowFE_log2FC", "proteinId")
+# lowFE_FC = subset(lowFE_FC, lowFE_log2FC >= 1 | lowFE_log2FC <= -1)
+
+lowN_results <- subset(results(ddsColl, contrast = c("condition", "lowN", "cont")))
+lowN_contrastDEGenes <- lfcShrink(ddsColl, contrast = c("condition", "lowN", "cont"), type = "ashr", res = lowN_results)
+save(lowN_contrastDEGenes, file = "dsub/output/lowN_contrastDEGenes.RData")
+lowN = as.data.frame(lowN_contrastDEGenes)
+lowN$proteinId = rownames(lowN)
+lowN_FC = lowN[,c(2,6)]
+names(lowN_FC) = c("lowN_log2FC", "proteinId")
+# lowN_FC = subset(lowN_FC, lowN_log2FC >= 1 | lowN_log2FC <= -1)
+
+salt_results <- subset(results(ddsColl, contrast = c("condition", "salt", "cont")))
+salt_contrastDEGenes <- lfcShrink(ddsColl, contrast = c("condition", "salt", "cont"), type = "ashr", res = salt_results)
+save(salt_contrastDEGenes, file = "dsub/output/salt_contrastDEGenes.RData")
+salt = as.data.frame(salt_contrastDEGenes)
+salt$proteinId = rownames(salt)
+salt_FC = salt[,c(2,6)]
+names(salt_FC) = c("salt_log2FC", "proteinId")
+head(salt_FC$salt_log2FC, decreasing = T)
+# salt_FC = subset(salt_FC, salt_log2FC >= 1 | salt_log2FC <= -1)
+
+DEGs_one = merge(lowN_FC,lowFE_FC, by = "proteinId")
+DEGs = merge(DEGs_one, salt_FC, by = "proteinId")
+
+DEGS_annot = merge(DEGs, annotations, by = "proteinId")
+write.csv(DEGS_annot, "dsub/output/annotatedDEG_ds.csv")
+
+norm_counts <- norm_counts %>% rownames_to_column(var = "proteinId")
+
+degs_annot_couts = merge(DEGS_annot, norm_counts,  by = "proteinId")
+write.csv(degs_annot_couts, "dsub/output/annotatedDEGcounts_ds.csv")
+
+selected_columns <- c("salt_log2FC", "lowN_log2FC", "lowFE_log2FC")
+sigDEGs <- subset(DEGs, apply(DEGs[selected_columns], 1, function(x) any(x >= 1 | x <= -1)))
+
+sigDEGS_annot = merge(sigDEGs, annotations, by = "proteinId")
+write.csv(sigDEGS_annot, "dsub/output/annotatedsigDEG_ds.csv")
+
+sigdegs_annot_couts = merge(sigDEGS_annot, norm_counts,  by = "proteinId")
+write.csv(sigdegs_annot_couts, "dsub/output/annotatedsigDEGcounts_ds.csv")
+```
+
+```{r}
+make_hmap <- function(rnames, title) {
+  matData <- c(salt[rnames,]$log2FoldChange,
+               lowN[rnames,]$log2FoldChange,
+               lowFE[rnames,]$log2FoldChange)
+  mat <- matrix(matData, ncol=3)
+  
+  top10FC = pheatmap(mat, 
+                     breaks = seq(from = -10, to = 10, length = 101), 
+                     cluster_cols = F, 
+                     cluster_rows = F,
+                     angle_col = "45", 
+                     display_numbers = T, 
+                     legend = T, 
+                     main = title, 
+                     labels_row = sapply(as.vector(annotations[rnames,]$Function), function(x) gsub('(.{1,70})(\\s|$)', '\\1\n', x)), 
+                     labels_col = c("salt", "lowN","lowFE"), 
+                     cellwidth=30, 
+                     cellheight=25, 
+                     cex = .85)
+}
+```
+
+```{r echo=F}
+a = make_hmap(rownames(head(salt[order(salt$log2FoldChange, decreasing=F),], 10)), "Most Down-regulated (salt)") ;a
+save_pheatmap_png(a, "dsub/output/images/ds_salt_down10FC.png")
+
+b = make_hmap(rownames(head(lowN[order(lowN$log2FoldChange, decreasing=F),], 10)), "Most Down-regulated (lowN)");b
+save_pheatmap_png(b, "dsub/output/images/ds_lowN_down10FC.png")
+
+c = make_hmap(rownames(head(lowFE[order(lowFE$log2FoldChange, decreasing=F),], 10)), "Most Down-regulated (lowFE)");c
+save_pheatmap_png(c, "dsub/output/images/ds_red_down10FC.png")
+
+
+f = make_hmap(rownames(head(salt[order(salt$log2FoldChange, decreasing=T),], 10)), "Most Up-regulated (salt)");f
+save_pheatmap_png(f, "dsub/output/images/ds_salt_up10FC.png")
+
+g = make_hmap(rownames(head(lowN[order(lowN$log2FoldChange, decreasing=T),], 10)), "Most Up-regulated (lowN)");g
+save_pheatmap_png(g, "dsub/output/images/ds_lowN_up10FC.png")
+
+h = make_hmap(rownames(head(lowFE[order(lowFE$log2FoldChange, decreasing=T),], 10)), "Most Up-regulated (lowFE)");h
+save_pheatmap_png(h, "dsub/output/images/ds_lowFE_up10FC.png")
+
+```
+
+```{r}
+lowN_contrastDEGenes$condition = "lowN"
+lowFE_contrastDEGenes$condition = "lowFE"
+salt_contrastDEGenes$condition = "salt"
+contrastDEGenes = rbind(salt_contrastDEGenes, lowN_contrastDEGenes, lowFE_contrastDEGenes)
+write.csv(contrastDEGenes, file = "dsub/output/contrastDEGenes_ds.csv")
+contrastDEGenes$proteinId = rownames(contrastDEGenes)
+degs = contrastDEGenes[!duplicated(contrastDEGenes$proteinId),]
+write.csv(degs, file = "dsub/output/unique_contrastDEGenes_ds.csv")
+```
+
+```{r}
+maplot <- function (res, thresh=0.05, labelsig=TRUE, textcx=1, ...) {
+  with(res, plot(baseMean, log2FoldChange, pch=20, cex=.5, log="x", ...))
+  with(subset(res, padj<thresh), points(baseMean, log2FoldChange, col="red", pch=20, cex=1.5))
+  if (labelsig) {
+    require(calibrate)
+    with(subset(res, padj<thresh), points(baseMean, log2FoldChange, labs=Gene, cex=textcx, col=2))
+  }
+}
+```
+
+```{r FC Scatter Plot, echo=FALSE, message=FALSE, warning=FALSE}
+par(mfrow=c(1,3), mar=c(4,4,2,1))
+xlim <- c(1,1e5); ylim <- c(-5,5)
+
+png("dsub/output/images/lowNplotMA.png")
+plotMA(lowN_contrastDEGenes, xlim=xlim, ylim = ylim, main = "lowN")
+dev.off()
+
+png("dsub/output/images/saltplotMA.png")
+plotMA(salt_contrastDEGenes, xlim=xlim, ylim = ylim, main = "salt")
+dev.off()
+
+png("dsub/output/images/lowFEplotMA.png")
+plotMA(lowFE_contrastDEGenes, xlim=xlim, ylim = ylim, main = "lowFE")
+dev.off()
+
+png("dsub/output/images/ds_plotMA.png")
+par(mfrow=c(1,3),mar = c(3, 3, 1, 1))
+xlim <- c(1,1e5); ylim <- c(-5,5)
+
+plotMA(salt_contrastDEGenes, xlim=xlim, ylim = ylim, main = "salt")
+plotMA(lowN_contrastDEGenes, xlim=xlim, ylim = ylim, main = "lowN")
+plotMA(lowFE_contrastDEGenes, xlim=xlim, ylim = ylim, main = "lowFE")
+
+dev.off()
+
+```
+
+\
+```{r}
+sessionInfo()
+```
+

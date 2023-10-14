@@ -1,0 +1,297 @@
+---
+title: "Weighted Gene Coexpression Network Analysis"
+output: html_notebook
+---
+```{r message=FALSE}
+###loading libraries for entire analysis
+
+# BiocManager::install("impute")
+
+library("WGCNA")
+allowWGCNAThreads()
+options(stringsAsFactors = FALSE)
+library(readr)
+library(readxl)
+library(tidyr)     
+library(ggplot2)
+library(reshape)
+library(plyr) 
+library(dplyr)
+```
+
+```{r}
+### setup working directory
+
+setwd("~/Library/Mobile Documents/com~apple~CloudDocs/Documents/WPI/Young/data")
+```
+
+```{r}
+### loading expression data
+dh_norm_counts = read.delim("dh/output/norm_counts.txt")
+dh_norm_counts$proteinId <- row.names(dh_norm_counts)
+```
+
+```{r}
+### load DEGs
+dh_contrastDEGenes = read_csv("dh/output/unique_contrastDEGenes_dh.csv")
+sig_degs_.95 = dh_contrastDEGenes[which(dh_contrastDEGenes$padj <= 0.95),]
+sig_degs_up = dh_contrastDEGenes[which(dh_contrastDEGenes$log2FoldChange >= 1),]
+sig_degs_down = dh_contrastDEGenes[which(dh_contrastDEGenes$log2FoldChange <= -1),]
+sig_degs = rbind(sig_degs_up, sig_degs_down)
+```
+
+```{r}
+dh_deg_counts = merge(dh_norm_counts, sig_degs, by = "proteinId")
+dh_sig_counts = dh_deg_counts[,-c(13:19)]
+write.csv(dh_sig_counts, "~/Library/Mobile Documents/com~apple~CloudDocs/Documents/WPI/Young/data/comparative_dh/output/sigDEGS_dh.csv")
+```
+
+```{r}
+dhdatexp = as.data.frame(t(dh_sig_counts[,-1])) #transpose data
+names(dhdatexp) = rownames(dh_sig_counts)
+rownames(dhdatexp) = names(dh_sig_counts[,-1])
+dim(dhdatexp)
+```
+
+```{r}
+gsg = goodSamplesGenes(dhdatexp, verbose = 3);
+gsg$allOK
+```
+
+```{r}
+dhsampleTree = hclust(dist(dhdatexp), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(dhsampleTree, main = "Sample clustering to detect outliers", ylab="", xlab="", cex.lab = 1.5,
+     cex.axis = 1.5, cex.main = 2)
+```
+
+```{r}
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+# sft_dh = pickSoftThreshold(dhdatexp, powerVector = powers, verbose = 5)
+# save(sft_dh, file = "comparative_dh/output/dh/sft_dh.RData")
+load("comparative_dh/output/dh/sft_dh.RData")
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft_dh$fitIndices[,1], -sign(sft_dh$fitIndices[,3])*sft_dh$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"));
+text(sft_dh$fitIndices[,1], -sign(sft_dh$fitIndices[,3])*sft_dh$fitIndices[,2],
+labels=powers,cex=cex1,col="red");
+# this line correspondh to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft_dh$fitIndices[,1], sft_dh$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft_dh$fitIndices[,1], sft_dh$fitIndices[,5], labels=powers, cex=cex1,col="red")
+
+# power = 12
+```
+
+```{r}
+# net_dh = blockwiseModules(dhdatexp, power = 12, TOMType = "unsigned", minModuleSize = 30,
+#                                    reassignThreshold = 0, mergeCutHeight = 0.25,
+#                                    numericLabels = TRUE, pamRespectsDendro = FALSE,
+#                                    saveTOMs = FALSE, verbose = 5)
+# save(net_dh, file = "comparative_dh/output/dh/net_dh.RData")
+
+load("comparative_dh/output/dh/net_dh.RData")
+```
+
+
+```{r}
+table(net_dh$colors)
+```
+
+
+```{r}
+# open a graphics window
+sizeGrWindow(12, 9)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net_dh$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net_dh$dendrograms[[1]], 
+                    mergedColors[net_dh$blockGenes[[1]]], "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+
+```{r}
+dhmoduleLabels = net_dh$colors
+dhmoduleColors = labels2colors(net_dh$colors) ; table(dhmoduleColors)
+dhMEs = net_dh$MEs;
+dhgeneTree = net_dh$dendrograms[[1]];
+save(dhMEs, dhmoduleLabels, dhmoduleColors, dhgeneTree,
+file = "comparative_dh/output/dh/dh-networkConstruction-auto.RData")
+```
+
+# Part 5: Visualization of Networks
+```{r}
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+dhdissTOM = 1-TOMsimilarityFromExpr(dhdatexp, power = 12);
+# Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+dhplotTOM = dhdissTOM^16;
+# Set diagonal to NA for a nicer plot
+diag(dhplotTOM) = NA;
+# Call the plot function
+sizeGrWindow(9,9)
+png("comparative_dh/output/dh/dh-network.png")
+print(TOMplot(dhplotTOM, dhgeneTree, dhmoduleColors, main = "Network heatmap plot"))
+dev.off()
+```
+
+```{r}
+dhnGenes = ncol(dhdatexp)
+dhnSamples = nrow(dhdatexp)
+
+nSelect = 100
+# For reproducibility, we set the random seed
+set.seed(10);
+dhselect = sample(dhnGenes, size = nSelect);
+dhselectTOM = dhdissTOM[dhselect, dhselect];
+# There’s no simple way of restricting a clustering tree to a subset of genes, so we must re-cluster.
+dhselectTree = hclust(as.dist(dhselectTOM), method = "average")
+dhselectColors = dhmoduleColors[dhselect];
+# Open a graphical window
+sizeGrWindow(9,9)
+# Taking the dissimilarity to a power, say 10, makes the plot more informative by effectively changing
+# the color palette; setting the diagonal to NA also improves the clarity of the plot
+dhplotDiss = dhselectTOM^7;
+diag(dhplotDiss) = NA;
+TOMplot(dhplotDiss, dhselectTree, dhselectColors, main = "Network heatmap plot, selected genes")
+```
+
+```{r}
+# Recalculate module eigengenes
+dhMEs = moduleEigengenes(dhdatexp, dhmoduleColors)$eigengenes
+dhMET = orderMEs(dhMEs)
+# Plot the relationships among the eigengenes and the trait
+sizeGrWindow(5,7.5);
+par(cex = 0.9)
+plotEigengeneNetworks(dhMET, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 0.8, xLabelsAngle = 90)
+```
+
+```{r}
+# Plot the dendrogram
+sizeGrWindow(6,6);
+par(cex = 1.0)
+plotEigengeneNetworks(dhMET, "Eigengene dendrogram", marDendro = c(0,4,2,0),
+plotHeatmaps = FALSE)
+# Plot the heatmap matrix (note: this plot will overwrite the dendrogram plot)
+par(cex = 1.0)
+plotEigengeneNetworks(dhMET, "Eigengene adjacency heatmap", marHeatmap = c(3,4,2,2),
+plotDendrograms = FALSE, xLabelsAngle = 90)
+```
+
+
+```{r}
+### trend analysis
+
+dhgeneModuleMembership = as.data.frame(cor(dhdatexp, dhMEs, use = "p"));
+dhmodule_colors = data.frame(dhmoduleColors)
+dhcounts <- cbind(dh_sig_counts,dhmodule_colors)
+dhdata = data.frame(t(dhcounts))
+dhcolors = unique(dhcounts$dhmoduleColors)
+
+dhMM_counts = cbind(dhcounts,dhgeneModuleMembership)
+
+
+write.csv(dhMM_counts, file = "comparative_dh/output/dh/MM_dh_counts.csv")
+
+```
+
+```{r}
+annotations = read_csv("~/Library/Mobile Documents/com~apple~CloudDocs/Documents/WPI/Young/data/dh/Annotation/ergo_dhWT__annotationCounts.csv")
+names(annotations)[2] = "proteinId"
+
+MM_annotation = merge(dhMM_counts, annotations, by = "proteinId")
+write.csv(MM_annotation, file = "comparative_dh/output/MM_dh_counts_annotation.csv")
+```
+
+
+```{r}
+for (i in dhcolors){
+  
+  print(i)
+  
+  s = subset(dhcounts, grepl(i, dhdata), proteinId:lowFE.2)
+  n <- nrow(s)
+  
+  module.dist.df.long = gather(s, dhmodule_colors, dhcounts, cont:lowFE.2)
+  names(module.dist.df.long) <- c("proteinId", "genotype", "count")
+  
+  
+  plot.tmp = ggplot(data = module.dist.df.long, aes(x = genotype, y = count, group = proteinId)) +
+    geom_line()  +
+    geom_line(data = module.dist.df.long %>% group_by(genotype) %>% summarize(count = mean(count)), aes(group = 2), size = 1.25, color = "red") +
+    geom_line(data = module.dist.df.long %>% group_by(genotype) %>% summarize(count = median(count)), aes(group = 2), size = 1.25, color = "blue") +
+    scale_y_continuous(trans="log10") +
+    #labs(title = paste("module:",i,"number of transcripts:",n, sep = "\n")) +
+    labs(title = paste(i,n, sep = "\n")) +
+    theme(plot.title = element_text(size = 50)) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    theme(axis.text = element_text(size = 20))
+  
+  
+  filename_ggplot = paste("comparative_dh/output/dh/MM_dh_counts_",i,".eps", sep = "") # make sure this directory exists in your working directory or the code will fail saying could not open png device
+  postscript(filename_ggplot, width = 1000, height = 1000)
+  print(plot.tmp)
+  dev.off()
+  
+}
+```
+
+```{r}
+ME=moduleEigengenes(dhdatexp,dhmoduleColors)
+dhdatME=moduleEigengenes(dhdatexp,dhmoduleColors)$eigengenes
+signif(cor(dhdatME, use="p"), 2)
+
+dissimME=(1-t(cor(dhdatME, method="p")))/2
+hclustdatME=hclust(as.dist(dissimME), method="average" )
+# Plot the eigengene dendrogram
+par(mfrow=c(1,1))
+plot(hclustdatME, main="Clustering tree based of the module eigengenes")
+
+for (i in dhcolors){
+  
+  s = subset(dhcounts, grepl(i, dhdata), proteinId:lowFE.2)
+  n <- nrow(s)
+
+  sizeGrWindow(8,7);
+  which.module=i
+  dhME=dhdatME[, paste("ME",which.module, sep="")]
+  
+  MM_filename = paste("comparative_dh/output/dh/MM_heat_dh_",i,".eps", sep = "")
+  postscript(MM_filename , width = 800, height = 1000, pointsize = 15)
+  
+  par(mfrow=c(2,1), mar=c(0, 0.5, 3, 5))
+  plotMat(t(scale(dhdatexp[,dhmoduleColors==which.module ]) ),
+          nrgcols=30,rlabels=F,rcols=which.module,
+          main=paste(i,n, sep = " - "), cex.main=2)
+  
+  dev.off()
+  
+  MM_filename = paste("comparative_dh/output/dh/MM_bar_dh_",i,".eps", sep = "") 
+  postscript(MM_filename, width = 1000, height = 1000, pointsize = 15)
+  
+  par(mar=c(5, 4.2, 2, 0.7))
+  barplot(dhME, col=which.module, main="", cex.main=2, horiz = F, ylim = c(-.4, .9),
+          ylab="eigengene expression",xlab="array sample",axisnames = T, names.arg = c( "cont", "cont", "cont", "lowN", "lowN", "salt", "salt", "salt", "lowFE", "lowFE", "lowFE"))
+  
+  dev.off()
+  
+}
+```
+
